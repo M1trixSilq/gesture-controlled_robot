@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import platform
-import struct
 import sys
 import time
 from dataclasses import dataclass
@@ -32,41 +30,18 @@ COMMANDS = {
 
 def load_optional_module(name: str):
     if not find_spec(name):
-        return None, None
+        return None
     try:
         return import_module(name)
     except Exception:
         return None
 
-REQUIRED_PYTHON_VERSION = (3, 12, 8)
 cv2 = load_optional_module("cv2")
 mp = load_optional_module("mediapipe")
 
 
 def env_hint_ru() -> str:
-    bits = struct.calcsize("P") * 8
-    py = platform.python_version()
-    sys_name = platform.system()
-    machine = platform.machine()
-    return (
-        f"Python {py}, {bits}-bit, {sys_name}/{machine}. "
-        "Проект настроен под Python 3.12.8 x64; используйте именно эту версию интерпретатора."
-    )
-
-
-def python_version_error_ru() -> str | None:
-    current = sys.version_info[:3]
-    if current == REQUIRED_PYTHON_VERSION:
-        return None
-
-    required = ".".join(map(str, REQUIRED_PYTHON_VERSION))
-    current_s = ".".join(map(str, current))
-    return (
-        "Неподдерживаемая версия Python для этого проекта.\n"
-        f"Текущая версия: {current_s}\n"
-        f"Требуемая версия: {required}\n"
-        "Запустите проект интерпретатором Python 3.12.8."
-    )
+    return f"Python: {sys.executable}"
 
 
 def opencv_missing_message_ru() -> str:
@@ -82,7 +57,7 @@ def opencv_missing_message_ru() -> str:
 
     venv = os.environ.get("VIRTUAL_ENV")
     if venv:
-        scripts = "Scripts/python.exe" if platform.system() == "Windows" else "bin/python"
+        scripts = "Scripts/python.exe" if os.name == "nt" else "bin/python"
         venv_python = Path(venv) / scripts
         lines.append(f"Обнаружено активное venv: {venv}")
         lines.append(f"Рекомендуемый запуск: \"{venv_python}\" main.py")
@@ -268,10 +243,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    version_error = python_version_error_ru()
-    if version_error:
-        print(version_error)
-        return 1
     args = parse_args()
     app = GestureRobotController(camera_index=args.camera)
     try:
