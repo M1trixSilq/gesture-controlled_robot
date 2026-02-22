@@ -66,7 +66,7 @@ def opencv_missing_message_ru() -> str:
 
 
 class GestureRobotController:
-    def __init__(self, camera_index: int = 0, min_detection_conf: float = 0.6, min_tracking_conf: float = 0.6):
+    def __init__(self, camera_index: int = 0, min_detection_conf: float = 0.5, min_tracking_conf: float = 0.5):
         self.camera_index = camera_index
         self.prev_command = COMMANDS["STOP"]
         self.prev_command_time = 0.0
@@ -80,8 +80,9 @@ class GestureRobotController:
             self.mp_hands = mp.solutions.hands
             self.mp_draw = mp.solutions.drawing_utils
             self.hands = self.mp_hands.Hands(
+                static_image_mode=False,
                 max_num_hands=1,
-                model_complexity=1,
+                model_complexity=0,
                 min_detection_confidence=min_detection_conf,
                 min_tracking_confidence=min_tracking_conf,
             )
@@ -135,9 +136,12 @@ class GestureRobotController:
 
         if self._is_fist(landmarks, is_right_hand):
             return COMMANDS["GRIP_CLOSE"]
+        direction_command = self._classify_direction(landmarks)
+        if direction_command.code != COMMANDS["STOP"].code:
+            return direction_command
         if self._is_open_palm(landmarks):
             return COMMANDS["GRIP_OPEN"]
-        return self._classify_direction(landmarks)
+        return COMMANDS["STOP"]
 
     @staticmethod
     def _draw_hand_box(frame, hand_landmarks):
@@ -184,7 +188,9 @@ class GestureRobotController:
             return COMMANDS["STOP"], f"Распознавание жестов недоступно: {env_hint_ru()}"
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb.flags.writeable = False
         result = self.hands.process(rgb)
+        rgb.flags.writeable = True
 
         command = COMMANDS["STOP"]
         status_text = "Кисть не найдена. Робот: Стоп"
