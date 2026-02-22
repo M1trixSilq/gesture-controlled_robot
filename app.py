@@ -88,6 +88,12 @@ class GestureRobotController:
             )
 
     @staticmethod
+    def _normalize_handedness(label: str, mirrored_input: bool = True) -> bool:
+        """Returns True for right hand taking mirrored webcam input into account."""
+        is_right = label == "Right"
+        return (not is_right) if mirrored_input else is_right
+
+    @staticmethod
     def _finger_is_extended(landmarks, tip_idx: int, pip_idx: int) -> bool:
         return landmarks[tip_idx].y < landmarks[pip_idx].y
 
@@ -136,11 +142,11 @@ class GestureRobotController:
 
         if self._is_fist(landmarks, is_right_hand):
             return COMMANDS["GRIP_CLOSE"]
-        direction_command = self._classify_direction(landmarks)
-        if direction_command.code != COMMANDS["STOP"].code:
-            return direction_command
         if self._is_open_palm(landmarks):
             return COMMANDS["GRIP_OPEN"]
+        direction_command = self._classify_direction(landmarks)
+        if direction_command.code != COMMANDS["STOP"].code:
+            return direction_command   
         return COMMANDS["STOP"]
 
     @staticmethod
@@ -150,7 +156,8 @@ class GestureRobotController:
         ys = [int(lm.y * h) for lm in hand_landmarks.landmark]
         x_min, x_max = max(0, min(xs) - 20), min(w - 1, max(xs) + 20)
         y_min, y_max = max(0, min(ys) - 20), min(h - 1, max(ys) + 20)
-        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 200, 255), 2)
+        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
+        cv2.putText(frame, "Ладонь обнаружена", (x_min, max(25, y_min - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return x_min, y_min, x_max, y_max
 
     @staticmethod
@@ -198,10 +205,8 @@ class GestureRobotController:
         if result.multi_hand_landmarks:
             hand = result.multi_hand_landmarks[0]
             self.mp_draw.draw_landmarks(frame, hand, self.mp_hands.HAND_CONNECTIONS)
-            self._draw_hand_box(frame, hand)
             handedness = result.multi_handedness[0].classification[0].label if result.multi_handedness else "Right"
-            is_right_hand = handedness == "Right"
-
+            is_right_hand = self._normalize_handedness(handedness, mirrored_input=True)
             command = self.detect_command(hand, is_right_hand)
             command = self._stabilize_command(command)
             box = self._draw_hand_box(frame, hand)
