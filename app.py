@@ -12,19 +12,6 @@ from importlib.util import find_spec
 from pathlib import Path
 
 
-def load_optional_module(name: str):
-    if not find_spec(name):
-        return None, None
-    try:
-        return import_module(name), None
-    except Exception as exc:
-        return None, str(exc)
-
-
-cv2, cv2_import_error = load_optional_module("cv2")
-np, np_import_error = load_optional_module("numpy")
-
-
 @dataclass
 class RobotCommand:
     code: str
@@ -47,13 +34,13 @@ def load_optional_module(name: str):
     if not find_spec(name):
         return None, None
     try:
-        return import_module(name), None
-    except Exception as exc:
-        return None, str(exc)
+        return import_module(name)
+    except Exception:
+        return None
 
-
-cv2, cv2_import_error = load_optional_module("cv2")
-mp, mp_import_error = load_optional_module("mediapipe")
+REQUIRED_PYTHON_VERSION = (3, 12, 8)
+cv2 = load_optional_module("cv2")
+mp = load_optional_module("mediapipe")
 
 
 def env_hint_ru() -> str:
@@ -63,7 +50,22 @@ def env_hint_ru() -> str:
     machine = platform.machine()
     return (
         f"Python {py}, {bits}-bit, {sys_name}/{machine}. "
-        "Для распознавания жестов нужен mediapipe (обычно: Python 3.10/3.11 x64)."
+        "Проект настроен под Python 3.12.8 x64; используйте именно эту версию интерпретатора."
+    )
+
+
+def python_version_error_ru() -> str | None:
+    current = sys.version_info[:3]
+    if current == REQUIRED_PYTHON_VERSION:
+        return None
+
+    required = ".".join(map(str, REQUIRED_PYTHON_VERSION))
+    current_s = ".".join(map(str, current))
+    return (
+        "Неподдерживаемая версия Python для этого проекта.\n"
+        f"Текущая версия: {current_s}\n"
+        f"Требуемая версия: {required}\n"
+        "Запустите проект интерпретатором Python 3.12.8."
     )
 
 
@@ -84,26 +86,6 @@ def opencv_missing_message_ru() -> str:
         venv_python = Path(venv) / scripts
         lines.append(f"Обнаружено активное venv: {venv}")
         lines.append(f"Рекомендуемый запуск: \"{venv_python}\" main.py")
-    if cv2_import_error:
-        lines.append(f"Ошибка импорта opencv-python: {cv2_import_error}")
-
-    return "\n".join(lines)
-
-
-def mediapipe_missing_message_ru() -> str:
-    current_python = Path(sys.executable)
-    lines = [
-        "Пакет mediapipe недоступен в текущем интерпретаторе, из-за этого ладони и жесты не распознаются.",
-        f"Текущий Python: {current_python}",
-        "Установите зависимости в этот же интерпретатор:",
-        f"  \"{current_python}\" -m pip install -r requirements.txt",
-        "И запускайте этим же интерпретатором:",
-        f"  \"{current_python}\" main.py",
-        env_hint_ru(),
-    ]
-
-    if mp_import_error:
-        lines.append(f"Ошибка импорта mediapipe: {mp_import_error}")
 
     return "\n".join(lines)
 
@@ -250,8 +232,6 @@ class GestureRobotController:
     def run(self):
         if cv2 is None:
             raise RuntimeError(opencv_missing_message_ru())
-        if self.hands is None:
-            raise RuntimeError(mediapipe_missing_message_ru())
 
         cap = cv2.VideoCapture(self.camera_index)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -288,6 +268,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    version_error = python_version_error_ru()
+    if version_error:
+        print(version_error)
+        return 1
     args = parse_args()
     app = GestureRobotController(camera_index=args.camera)
     try:
