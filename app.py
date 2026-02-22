@@ -15,17 +15,18 @@ from pathlib import Path
 @dataclass
 class RobotCommand:
     code: str
+    gesture_ru: str
     action_ru: str
 
 
 COMMANDS = {
-    "STOP": RobotCommand("0000", "Стоп"),
-    "TURN_RIGHT": RobotCommand("0001", "Поворот направо"),
-    "TURN_LEFT": RobotCommand("0010", "Поворот налево"),
-    "BACKWARD": RobotCommand("1000", "Назад"),
-    "FORWARD": RobotCommand("0100", "Вперёд"),
-    "GRIP_CLOSE": RobotCommand("GRIP_CLOSE", "Сжать захват манипулятора"),
-    "GRIP_OPEN": RobotCommand("GRIP_OPEN", "Разжать захват манипулятора"),
+    "STOP": RobotCommand("0000", "Горизонтально", "Стоп"),
+    "TURN_RIGHT": RobotCommand("0001", "Наклон вправо", "Поворот направо"),
+    "TURN_LEFT": RobotCommand("0010", "Наклон влево", "Поворот налево"),
+    "BACKWARD": RobotCommand("1000", "Наклон назад", "Назад"),
+    "FORWARD": RobotCommand("0100", "Наклон вперёд", "Вперёд"),
+    "GRIP_CLOSE": RobotCommand("GRIP_CLOSE", "Кулак", "Сжать захват манипулятора"),
+    "GRIP_OPEN": RobotCommand("GRIP_OPEN", "Открытая кисть", "Разжать захват манипулятора"),
 }
 
 
@@ -99,14 +100,14 @@ class GestureRobotController:
     def _finger_is_extended(landmarks, tip_idx: int, pip_idx: int) -> bool:
         return landmarks[tip_idx].y < landmarks[pip_idx].y
 
-    def _is_fist(self, landmarks) -> bool:
+    def _is_fist(self, landmarks, is_right_hand: bool) -> bool:
         fingers = [
             self._finger_is_extended(landmarks, 8, 6),
             self._finger_is_extended(landmarks, 12, 10),
             self._finger_is_extended(landmarks, 16, 14),
             self._finger_is_extended(landmarks, 20, 18),
         ]
-        thumb_folded = landmarks[4].x > landmarks[3].x
+        thumb_folded = landmarks[4].x < landmarks[3].x if is_right_hand else landmarks[4].x > landmarks[3].x
         return not any(fingers) and thumb_folded
 
     def _is_open_palm(self, landmarks) -> bool:
@@ -139,10 +140,10 @@ class GestureRobotController:
             return COMMANDS["FORWARD"]
         return COMMANDS["STOP"]
 
-    def detect_command(self, hand_landmarks) -> RobotCommand:
+    def detect_command(self, hand_landmarks, is_right_hand: bool) -> RobotCommand:
         landmarks = hand_landmarks.landmark
 
-        if self._is_fist(landmarks):
+        if self._is_fist(landmarks, is_right_hand):
             return COMMANDS["GRIP_CLOSE"]
         if self._is_open_palm(landmarks):
             return COMMANDS["GRIP_OPEN"]
@@ -156,6 +157,24 @@ class GestureRobotController:
         x_min, x_max = max(0, min(xs) - 20), min(w - 1, max(xs) + 20)
         y_min, y_max = max(0, min(ys) - 20), min(h - 1, max(ys) + 20)
         cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 200, 255), 2)
+        return x_min, y_min, x_max, y_max
+
+    @staticmethod
+    def _draw_box_label(frame, box, command: RobotCommand):
+        x_min, y_min, _, _ = box
+        lines = [f"Жест: {command.gesture_ru}", f"Робот: {command.action_ru}"]
+        base_x = x_min + 10
+        base_y = max(30, y_min - 35)
+        for i, line in enumerate(lines):
+            cv2.putText(
+                frame,
+                line,
+                (base_x, base_y + (i * 25)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+            )
 
     def _stabilize_command(self, new_command: RobotCommand) -> RobotCommand:
         now = time.time()
@@ -178,16 +197,20 @@ class GestureRobotController:
         result = self.hands.process(rgb)
 
         command = COMMANDS["STOP"]
-        status_text = "Кисть не найдена. Действие: Стоп"
+        status_text = "Кисть не найдена. Робот: Стоп"
 
         if result.multi_hand_landmarks:
             hand = result.multi_hand_landmarks[0]
             self.mp_draw.draw_landmarks(frame, hand, self.mp_hands.HAND_CONNECTIONS)
             self._draw_hand_box(frame, hand)
+            handedness = result.multi_handedness[0].classification[0].label if result.multi_handedness else "Right"
+            is_right_hand = handedness == "Right"
 
-            command = self.detect_command(hand)
+            command = self.detect_command(hand, is_right_hand)
             command = self._stabilize_command(command)
-            status_text = f"Обнаружен жест: {command.action_ru}"
+            box = self._draw_hand_box(frame, hand)
+            self._draw_box_label(frame, box, command)
+            status_text = f"Обнаружен жест: {command.gesture_ru}. Команда роботу: {command.action_ru}"
 
         return command, status_text
 
@@ -212,16 +235,8 @@ class GestureRobotController:
             command, status_text = self._process_frame(frame)
 
             cv2.putText(frame, "Управление роботом жестами", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-            cv2.putText(frame, status_text, (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2)
-            cv2.putText(
-                frame,
-                f"Код для Arduino (D3 D2 D1 D0): {command.code}",
-                (20, 120),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
-                (255, 255, 0),
-                2,
-            )
+            cv2.putText(frame, status_text, (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 255, 255), 2)
+            cv2.putText(frame, f"D3 D2 D1 D0: {command.code}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 0), 2)
 
             cv2.imshow("Gesture Robot UI", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
