@@ -36,8 +36,9 @@ def load_optional_module(name: str):
     except Exception:
         return None
 
+
 cv2 = load_optional_module("cv2")
-mp = load_optional_module("mediapipe")
+np = load_optional_module("numpy")
 
 
 def env_hint_ru() -> str:
@@ -50,9 +51,9 @@ def opencv_missing_message_ru() -> str:
         "Пакет opencv-python недоступен в текущем интерпретаторе.",
         f"Текущий Python: {current_python}",
         "Установите зависимости в этот же интерпретатор:",
-        f"  \"{current_python}\" -m pip install -r requirements.txt",
+        f'  "{current_python}" -m pip install -r requirements.txt',
         "И запускайте этим же интерпретатором:",
-        f"  \"{current_python}\" main.py",
+        f'  "{current_python}" main.py',
     ]
 
     venv = os.environ.get("VIRTUAL_ENV")
@@ -60,72 +61,92 @@ def opencv_missing_message_ru() -> str:
         scripts = "Scripts/python.exe" if os.name == "nt" else "bin/python"
         venv_python = Path(venv) / scripts
         lines.append(f"Обнаружено активное venv: {venv}")
-        lines.append(f"Рекомендуемый запуск: \"{venv_python}\" main.py")
+        lines.append(f'Рекомендуемый запуск: "{venv_python}" main.py')
 
     return "\n".join(lines)
 
 
+def numpy_missing_message_ru() -> str:
+    return (
+        "Пакет numpy недоступен в текущем интерпретаторе. "
+        "Установите зависимости: python -m pip install -r requirements.txt"
+    )
+
+
 class GestureRobotController:
-    def __init__(self, camera_index: int = 0, min_detection_conf: float = 0.5, min_tracking_conf: float = 0.5):
+    def __init__(self, camera_index: int = 0):
         self.camera_index = camera_index
         self.prev_command = COMMANDS["STOP"]
         self.prev_command_time = 0.0
         self.command_hold_sec = 0.25
 
-        self.mp_hands = None
-        self.mp_draw = None
-        self.hands = None
-
-        if mp is not None:
-            self.mp_hands = mp.solutions.hands
-            self.mp_draw = mp.solutions.drawing_utils
-            self.hands = self.mp_hands.Hands(
-                static_image_mode=False,
-                max_num_hands=1,
-                model_complexity=0,
-                min_detection_confidence=min_detection_conf,
-                min_tracking_confidence=min_tracking_conf,
-            )
-
     @staticmethod
-    def _normalize_handedness(label: str, mirrored_input: bool = True) -> bool:
-        """Returns True for right hand taking mirrored webcam input into account."""
-        is_right = label == "Right"
-        return (not is_right) if mirrored_input else is_right
+    def _distance(p1: tuple[int, int], p2: tuple[int, int]) -> float:
+        dx = p1[0] - p2[0]
+        dy = p1[1] - p2[1]
+        return (dx * dx + dy * dy) ** 0.5
 
-    @staticmethod
-    def _finger_is_extended(landmarks, tip_idx: int, pip_idx: int) -> bool:
-        return landmarks[tip_idx].y < landmarks[pip_idx].y
 
-    def _is_fist(self, landmarks, is_right_hand: bool) -> bool:
-        fingers = [
-            self._finger_is_extended(landmarks, 8, 6),
-            self._finger_is_extended(landmarks, 12, 10),
-            self._finger_is_extended(landmarks, 16, 14),
-            self._finger_is_extended(landmarks, 20, 18),
-        ]
-        thumb_folded = landmarks[4].x < landmarks[3].x if is_right_hand else landmarks[4].x > landmarks[3].x
-        return not any(fingers) and thumb_folded
+    def _extract_hand_contour(self, frame):
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    def _is_open_palm(self, landmarks) -> bool:
-        fingers = [
-            self._finger_is_extended(landmarks, 8, 6),
-            self._finger_is_extended(landmarks, 12, 10),
-            self._finger_is_extended(landmarks, 16, 14),
-            self._finger_is_extended(landmarks, 20, 18),
-        ]
-        thumb_extended = abs(landmarks[4].x - landmarks[2].x) > 0.08
-        return all(fingers) and thumb_extended
+        lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+        upper_skin = np.array([25, 255, 255], dtype=np.uint8)
+        mask = cv2.inRange(hsv, lower_skin, upper_skin)
 
-    def _classify_direction(self, landmarks) -> RobotCommand:
-        wrist = landmarks[0]
-        middle_mcp = landmarks[9]
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-        dx = middle_mcp.x - wrist.x
-        dy = middle_mcp.y - wrist.y
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None, mask
 
-        horizontal_threshold = 0.08
-        vertical_threshold = 0.12
+        contour = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(contour) < 7000:
+            return None, mask
+        return contour, mask
+
+    def _count_fingers(self, contour, center: tuple[int, int]) -> int:
+        hull_indices = cv2.convexHull(contour, returnPoints=False)
+        if hull_indices is None or len(hull_indices) < 4:
+            return 0
+
+        defects = cv2.convexityDefects(contour, hull_indices)
+        if defects is None:
+            return 0
+
+        fingers = 0
+        for i in range(defects.shape[0]):
+            s, e, f, _ = defects[i, 0]
+            start = tuple(contour[s][0])
+            end = tuple(contour[e][0])
+            far = tuple(contour[f][0])
+
+            a = self._distance(start, end)
+            b = self._distance(start, far)
+            c = self._distance(end, far)
+            if b * c == 0:
+                continue
+
+            angle = np.degrees(np.arccos((b * b + c * c - a * a) / (2 * b * c)))
+            if angle > 85:
+                continue
+
+            if far[1] > center[1]:
+                continue
+
+            fingers += 1
+
+        return min(fingers + 1, 5) if fingers > 0 else 0
+
+    def _classify_direction(self, center: tuple[int, int], wrist: tuple[int, int]) -> RobotCommand:
+        dx = center[0] - wrist[0]
+        dy = center[1] - wrist[1]
+
+        horizontal_threshold = 35
+        vertical_threshold = 45
 
         if dx > horizontal_threshold:
             return COMMANDS["TURN_RIGHT"]
@@ -137,35 +158,33 @@ class GestureRobotController:
             return COMMANDS["FORWARD"]
         return COMMANDS["STOP"]
 
-    def detect_command(self, hand_landmarks, is_right_hand: bool) -> RobotCommand:
-        landmarks = hand_landmarks.landmark
-
-        if self._is_fist(landmarks, is_right_hand):
+    def _command_from_shape(self, finger_count: int, center: tuple[int, int], wrist: tuple[int, int]) -> RobotCommand:
+        if finger_count <= 1:
             return COMMANDS["GRIP_CLOSE"]
-        if self._is_open_palm(landmarks):
+        if finger_count >= 4:
             return COMMANDS["GRIP_OPEN"]
-        direction_command = self._classify_direction(landmarks)
+
+        direction_command = self._classify_direction(center, wrist)
         if direction_command.code != COMMANDS["STOP"].code:
-            return direction_command   
+            return direction_command
         return COMMANDS["STOP"]
 
     @staticmethod
-    def _draw_hand_box(frame, hand_landmarks):
-        h, w, _ = frame.shape
-        xs = [int(lm.x * w) for lm in hand_landmarks.landmark]
-        ys = [int(lm.y * h) for lm in hand_landmarks.landmark]
-        x_min, x_max = max(0, min(xs) - 20), min(w - 1, max(xs) + 20)
-        y_min, y_max = max(0, min(ys) - 20), min(h - 1, max(ys) + 20)
+    def _draw_hand_box(frame, contour):
+        x, y, w, h = cv2.boundingRect(contour)
+        x_min, y_min = max(0, x - 20), max(0, y - 20)
+        x_max = min(frame.shape[1] - 1, x + w + 20)
+        y_max = min(frame.shape[0] - 1, y + h + 20)
         cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
         cv2.putText(frame, "Ладонь обнаружена", (x_min, max(25, y_min - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return x_min, y_min, x_max, y_max
 
     @staticmethod
-    def _draw_box_label(frame, box, command: RobotCommand):
+    def _draw_box_label(frame, box, command: RobotCommand, finger_count: int):
         x_min, y_min, _, _ = box
-        lines = [f"Жест: {command.gesture_ru}", f"Робот: {command.action_ru}"]
+        lines = [f"Жест: {command.gesture_ru}", f"Робот: {command.action_ru}", f"Пальцев: {finger_count}"]
         base_x = x_min + 10
-        base_y = max(30, y_min - 35)
+        base_y = max(30, y_min - 55)
         for i, line in enumerate(lines):
             cv2.putText(
                 frame,
@@ -191,26 +210,33 @@ class GestureRobotController:
         return new_command
 
     def _process_frame(self, frame) -> tuple[RobotCommand, str]:
-        if self.hands is None:
-            return COMMANDS["STOP"], f"Распознавание жестов недоступно: {env_hint_ru()}"
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
-        result = self.hands.process(rgb)
-        rgb.flags.writeable = True
 
+        contour, _ = self._extract_hand_contour(frame)
         command = COMMANDS["STOP"]
         status_text = "Кисть не найдена. Робот: Стоп"
 
-        if result.multi_hand_landmarks:
-            hand = result.multi_hand_landmarks[0]
-            self.mp_draw.draw_landmarks(frame, hand, self.mp_hands.HAND_CONNECTIONS)
-            handedness = result.multi_handedness[0].classification[0].label if result.multi_handedness else "Right"
-            is_right_hand = self._normalize_handedness(handedness, mirrored_input=True)
-            command = self.detect_command(hand, is_right_hand)
+        if contour is not None:
+            moments = cv2.moments(contour)
+            if moments["m00"] != 0:
+                cx = int(moments["m10"] / moments["m00"])
+                cy = int(moments["m01"] / moments["m00"])
+                center = (cx, cy)
+            else:
+                x, y, w, h = cv2.boundingRect(contour)
+                center = (x + w // 2, y + h // 2)
+
+            bottom_point = tuple(contour[contour[:, :, 1].argmax()][0])
+            finger_count = self._count_fingers(contour, center)
+            command = self._command_from_shape(finger_count, center, bottom_point)
             command = self._stabilize_command(command)
-            box = self._draw_hand_box(frame, hand)
-            self._draw_box_label(frame, box, command)
+
+            box = self._draw_hand_box(frame, contour)
+            self._draw_box_label(frame, box, command, finger_count)
+            cv2.circle(frame, center, 8, (255, 0, 255), -1)
+            cv2.circle(frame, bottom_point, 8, (0, 255, 255), -1)
+            cv2.line(frame, center, bottom_point, (255, 255, 0), 2)
+
             status_text = f"Обнаружен жест: {command.gesture_ru}. Команда роботу: {command.action_ru}"
 
         return command, status_text
@@ -218,6 +244,8 @@ class GestureRobotController:
     def run(self):
         if cv2 is None:
             raise RuntimeError(opencv_missing_message_ru())
+        if np is None:
+            raise RuntimeError(numpy_missing_message_ru())
 
         cap = cv2.VideoCapture(self.camera_index)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
