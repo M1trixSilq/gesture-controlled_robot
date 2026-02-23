@@ -36,13 +36,13 @@ class RobotCommand:
 
 
 COMMANDS = {
-    "STOP": RobotCommand("0000", "Открытая ладонь (пальцы вместе)", "Стоп"),
+    "STOP": RobotCommand("0000", "1 палец вниз", "Стоп"),
     "TURN_RIGHT": RobotCommand("0001", "1 палец вправо", "Поворот направо"),
     "TURN_LEFT": RobotCommand("0010", "1 палец влево", "Поворот налево"),
     "BACKWARD": RobotCommand("1000", "2 пальца вверх", "Назад"),
     "FORWARD": RobotCommand("0100", "1 палец вверх", "Вперёд"),
     "GRIP_CLOSE": RobotCommand("GRIP_CLOSE", "Кулак", "Сжать захват манипулятора"),
-    "GRIP_OPEN": RobotCommand("GRIP_OPEN", "Открытая ладонь (пальцы раздельно)", "Разжать захват манипулятора"),
+    "GRIP_OPEN": RobotCommand("GRIP_OPEN", "Открытая ладонь", "Разжать захват манипулятора"),
 }
 
 def opencv_missing_message_ru() -> str:
@@ -287,6 +287,8 @@ class GestureRobotController:
             return COMMANDS["TURN_LEFT"]   
         if dy < -vertical_threshold and vertical_share > 0.60:
             return COMMANDS["FORWARD"]
+        if dy > vertical_threshold and vertical_share > 0.60:
+            return COMMANDS["STOP"]
         return COMMANDS["STOP"]
 
     @staticmethod
@@ -321,11 +323,9 @@ class GestureRobotController:
         if self._is_two_fingers_up_backward(hand_landmarks, fingers):
             return COMMANDS["BACKWARD"], finger_count
 
-        if self._is_open_palm_spread(hand_landmarks, fingers):
+        if self._is_open_palm_spread(hand_landmarks, fingers) or self._is_open_palm_together(hand_landmarks, fingers):
             return COMMANDS["GRIP_OPEN"], finger_count
 
-        if self._is_open_palm_together(hand_landmarks, fingers):
-            return COMMANDS["STOP"], finger_count
 
         return COMMANDS["STOP"], finger_count
 
