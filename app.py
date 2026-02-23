@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -129,14 +130,28 @@ class GestureRobotController:
     def _distance(lm, a: int, b: int) -> float:
         dx = lm[a].x - lm[b].x
         dy = lm[a].y - lm[b].y
-        return (dx * dx + dy * dy) ** 0.5
+        dz = lm[a].z - lm[b].z
+        return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+    @staticmethod
+    def _joint_angle(lm, a: int, b: int, c: int) -> float:
+        ab = (lm[a].x - lm[b].x, lm[a].y - lm[b].y, lm[a].z - lm[b].z)
+        cb = (lm[c].x - lm[b].x, lm[c].y - lm[b].y, lm[c].z - lm[b].z)
+        dot = ab[0] * cb[0] + ab[1] * cb[1] + ab[2] * cb[2]
+        ab_norm = math.sqrt(ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2)
+        cb_norm = math.sqrt(cb[0] ** 2 + cb[1] ** 2 + cb[2] ** 2)
+        if ab_norm < 1e-6 or cb_norm < 1e-6:
+            return 0.0
+        cos_val = max(-1.0, min(1.0, dot / (ab_norm * cb_norm)))
+        return math.degrees(math.acos(cos_val))
 
     @staticmethod
     def _thumb_extended(hand_landmarks) -> bool:
         lm = hand_landmarks.landmark
-        mcp_to_tip = GestureRobotController._distance(lm, 2, 4)
-        mcp_to_ip = GestureRobotController._distance(lm, 2, 3)
-        return mcp_to_tip > mcp_to_ip * 1.25
+        thumb_straight = GestureRobotController._joint_angle(lm, 2, 3, 4) > 155
+        thumb_far_from_palm = GestureRobotController._distance(lm, 4, 5) > GestureRobotController._distance(lm, 3, 5) * 1.15
+        thumb_far_from_wrist = GestureRobotController._distance(lm, 4, 0) > GestureRobotController._distance(lm, 3, 0) * 1.08
+        return thumb_straight and thumb_far_from_palm and thumb_far_from_wrist
 
 
     @staticmethod
@@ -144,39 +159,101 @@ class GestureRobotController:
         lm = hand_landmarks.landmark
         thumb_up = GestureRobotController._thumb_extended(hand_landmarks)
 
-        finger_pairs = [(8, 6), (12, 10), (16, 14), (20, 18)]
-        others = [lm[tip].y < lm[pip].y for tip, pip in finger_pairs]
+        def is_finger_extended(mcp: int, pip: int, dip: int, tip: int) -> bool:
+            pip_angle = GestureRobotController._joint_angle(lm, mcp, pip, tip)
+            dip_angle = GestureRobotController._joint_angle(lm, pip, dip, tip)
+            tip_farther_than_pip = GestureRobotController._distance(lm, tip, 0) > GestureRobotController._distance(lm, pip, 0) * 1.08
+            return pip_angle > 160 and dip_angle > 150 and tip_farther_than_pip
+
+        others = [
+            is_finger_extended(5, 6, 7, 8),
+            is_finger_extended(9, 10, 11, 12),
+            is_finger_extended(13, 14, 15, 16),
+            is_finger_extended(17, 18, 19, 20),
+        ]
         return [thumb_up, *others]
 
     @staticmethod
     def _is_fist(hand_landmarks, fingers: list[bool]) -> bool:
         lm = hand_landmarks.landmark
-        finger_pairs = [(8, 6), (12, 10), (16, 14), (20, 18)]
-        curled_others = [lm[tip].y > lm[pip].y for tip, pip in finger_pairs]
-        return all(curled_others) and not any(fingers) and not GestureRobotController._thumb_extended(hand_landmarks)
+        curled_others = [
+            GestureRobotController._joint_angle(lm, 5, 6, 8) < 115,
+            GestureRobotController._joint_angle(lm, 9, 10, 12) < 115,
+            GestureRobotController._joint_angle(lm, 13, 14, 16) < 115,
+            GestureRobotController._joint_angle(lm, 17, 18, 20) < 115,
+        ]
+        thumb_curled = not GestureRobotController._thumb_extended(hand_landmarks)
+        return all(curled_others) and thumb_curled
 
     @staticmethod
-    def _is_open_palm_spread(hand_landmarks, fingers: list[bool]) -> bool:
-        if not all(fingers):
-            return False
-
+    def _open_palm_geometry_metrics(hand_landmarks) -> tuple[float, float, float, bool]:
         lm = hand_landmarks.landmark
 
         def dist(a: int, b: int) -> float:
-            dx = lm[a].x - lm[b].x
-            dy = lm[a].y - lm[b].y
-            return (dx * dx + dy * dy) ** 0.5
+            return GestureRobotController._distance(lm, a, b)
 
         palm_size = max(dist(0, 9), 1e-6)
-        adjacent_tip_distances = [dist(4, 8), dist(8, 12), dist(12, 16), dist(16, 20)]
-        avg_norm_distance = sum(adjacent_tip_distances) / (len(adjacent_tip_distances) * palm_size)
-        return avg_norm_distance > 0.72
+
+        adjacent_tip_distances = [dist(8, 12), dist(12, 16), dist(16, 20)]
+        avg_tip_norm = sum(adjacent_tip_distances) / (len(adjacent_tip_distances) * palm_size)
+
+        # Инвариант к масштабу: расстояние между tip относительно расстояния между MCP.
+        tip_to_base_ratios = [
+            dist(8, 12) / max(dist(5, 9), 1e-6),
+            dist(12, 16) / max(dist(9, 13), 1e-6),
+            dist(16, 20) / max(dist(13, 17), 1e-6),
+        ]
+        avg_tip_to_base_ratio = sum(tip_to_base_ratios) / len(tip_to_base_ratios)
+
+        thumb_index_norm = dist(4, 8) / palm_size
+
+        fingers_vertical = all(
+            (lm[tip].y - lm[mcp].y) / palm_size < -0.45
+            for mcp, tip in ((5, 8), (9, 12), (13, 16), (17, 20))
+        )
+
+        return avg_tip_norm, avg_tip_to_base_ratio, thumb_index_norm, fingers_vertical
+
+    @staticmethod
+    def _is_open_palm_spread(hand_landmarks, fingers: list[bool]) -> bool:
+        # Большой палец может флапать в детекции, поэтому опираемся на 4 длинных пальца.
+        if not all(fingers[1:]):
+            return False
+
+        avg_tip_norm, avg_tip_to_base_ratio, thumb_index_norm, fingers_vertical = (
+            GestureRobotController._open_palm_geometry_metrics(hand_landmarks)
+        )
+
+        thumb_wide_or_up = fingers[0] or thumb_index_norm > 0.90
+        return (
+            fingers_vertical
+            and avg_tip_norm > 0.62
+            and avg_tip_to_base_ratio > 1.45
+            and thumb_wide_or_up
+        )
+
+    @staticmethod
+    def _is_open_palm_together(hand_landmarks, fingers: list[bool]) -> bool:
+        if not all(fingers[1:]):
+            return False
+
+        avg_tip_norm, avg_tip_to_base_ratio, thumb_index_norm, fingers_vertical = (
+            GestureRobotController._open_palm_geometry_metrics(hand_landmarks)
+        )
+
+        thumb_not_spread = (not fingers[0]) or thumb_index_norm < 0.90
+        return (
+            fingers_vertical
+            and avg_tip_norm < 0.58
+            and avg_tip_to_base_ratio < 1.35
+            and thumb_not_spread
+        )
 
     @staticmethod
     def _classify_single_finger_direction(hand_landmarks, fingers: list[bool]) -> RobotCommand:
         lm = hand_landmarks.landmark
-        horizontal_threshold = 0.08
-        vertical_threshold = 0.10
+        horizontal_threshold = 0.28
+        vertical_threshold = 0.55
 
         finger_vectors = {
             0: (2, 4),
@@ -186,7 +263,7 @@ class GestureRobotController:
             4: (17, 20),
         }
 
-        finger_idx = next((idx for idx, up in enumerate(fingers) if up), None)
+        finger_idx = next((idx for idx, up in enumerate(fingers) if up and idx != 0), None)
         if finger_idx is None:
             return COMMANDS["STOP"]
 
@@ -194,31 +271,48 @@ class GestureRobotController:
         dx = lm[tip_id].x - lm[base_id].x
         dy = lm[tip_id].y - lm[base_id].y
 
-        if dx > horizontal_threshold:
+        palm_scale = max(GestureRobotController._distance(lm, 0, 9), 1e-6)
+        dx /= palm_scale
+        dy /= palm_scale
+        total = abs(dx) + abs(dy)
+        if total < 0.35:
+            return COMMANDS["STOP"]
+
+        horizontal_share = abs(dx) / total
+        vertical_share = abs(dy) / total
+
+        if dx > horizontal_threshold and horizontal_share > 0.60:
             return COMMANDS["TURN_RIGHT"]
-        if dx < -horizontal_threshold:
+        if dx < -horizontal_threshold and horizontal_share > 0.60:
             return COMMANDS["TURN_LEFT"]   
-        if dy < -vertical_threshold:
+        if dy < -vertical_threshold and vertical_share > 0.60:
             return COMMANDS["FORWARD"]
         return COMMANDS["STOP"]
 
     @staticmethod
     def _is_two_fingers_up_backward(hand_landmarks, fingers: list[bool]) -> bool:
         # Назад: подняты только указательный и средний пальцы, оба направлены вверх.
-        if fingers != [False, True, True, False, False]:
+        if not (fingers[1] and fingers[2] and not fingers[3] and not fingers[4]):
             return False
 
         lm = hand_landmarks.landmark
         index_dy = lm[8].y - lm[5].y
         middle_dy = lm[12].y - lm[9].y
-        vertical_threshold = 0.10
-        return index_dy < -vertical_threshold and middle_dy < -vertical_threshold
+        palm_scale = max(GestureRobotController._distance(lm, 0, 9), 1e-6)
+        vertical_threshold = 0.55
+        fingers_parallel = abs((lm[8].x - lm[5].x) - (lm[12].x - lm[9].x)) / palm_scale < 0.35
+        return (index_dy / palm_scale) < -vertical_threshold and (middle_dy / palm_scale) < -vertical_threshold and fingers_parallel
 
     def _command_from_landmarks(self, hand_landmarks, handedness_label: str) -> tuple[RobotCommand, int]:
         fingers = self._fingers_up(hand_landmarks, handedness_label)
         finger_count = sum(fingers)
 
-        if finger_count == 1:
+        only_index = fingers[1] and not any(fingers[2:])
+        only_middle = fingers[2] and not fingers[1] and not fingers[3] and not fingers[4]
+        only_ring = fingers[3] and not fingers[1] and not fingers[2] and not fingers[4]
+        only_pinky = fingers[4] and not any(fingers[1:4])
+
+        if only_index or only_middle or only_ring or only_pinky:
             return self._classify_single_finger_direction(hand_landmarks, fingers), finger_count
 
         if self._is_fist(hand_landmarks, fingers):
@@ -227,9 +321,10 @@ class GestureRobotController:
         if self._is_two_fingers_up_backward(hand_landmarks, fingers):
             return COMMANDS["BACKWARD"], finger_count
 
-        if finger_count == 5:
-            if self._is_open_palm_spread(hand_landmarks, fingers):
-                return COMMANDS["GRIP_OPEN"], finger_count
+        if self._is_open_palm_spread(hand_landmarks, fingers):
+            return COMMANDS["GRIP_OPEN"], finger_count
+
+        if self._is_open_palm_together(hand_landmarks, fingers):
             return COMMANDS["STOP"], finger_count
 
         return COMMANDS["STOP"], finger_count
