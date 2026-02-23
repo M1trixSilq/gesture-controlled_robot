@@ -97,20 +97,29 @@ class GestureRobotController:
         self.prev_command_time = 0.0
         self.command_hold_sec = 0.25
         self.text_font = self._load_font()
+        self.window_name = 'Gesture controlling for Rostech'
+        self.theme_primary = (174, 89, 0)
+        self.theme_secondary = (255, 140, 0)
+        self.theme_accent = (255, 255, 255)
 
     @staticmethod
     def _load_font():
         if PIL_font is None:
             return None
 
+        bundle_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
         candidates = [
-            "DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "C:/Windows/Fonts/arial.ttf",
+            bundle_dir / "assets" / "fonts" / "DejaVuSans.ttf",
+            bundle_dir / "assets" / "fonts" / "arial.ttf",
+            Path(__file__).resolve().parent / "assets" / "fonts" / "DejaVuSans.ttf",
+            Path(__file__).resolve().parent / "assets" / "fonts" / "arial.ttf",
+            Path("DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("C:/Windows/Fonts/arial.ttf"),
         ]
         for font_path in candidates:
             try:
-                return PIL_font.truetype(font_path, 28)
+                return PIL_font.truetype(str(font_path), 28)
             except Exception:
                 continue
         return None
@@ -342,23 +351,21 @@ class GestureRobotController:
         self.prev_command_time = now
         return new_command
 
-    def _draw_box_and_labels(self, frame, hand_landmarks, command: RobotCommand, finger_count: int):
+    def _draw_box_and_labels(self, frame, hand_landmarks, command: RobotCommand):
         h, w, _ = frame.shape
         xs = [int(lm.x * w) for lm in hand_landmarks.landmark]
         ys = [int(lm.y * h) for lm in hand_landmarks.landmark]
         x_min, x_max = max(0, min(xs) - 20), min(w - 1, max(xs) + 20)
         y_min, y_max = max(0, min(ys) - 20), min(h - 1, max(ys) + 20)
 
-        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 3)
-        frame = self._draw_text_ru(frame, "Рука обнаружена", (x_min, max(10, y_min - 35)), (0, 255, 0))
-
+        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), self.theme_secondary, 3)
+        frame = self._draw_text_ru(frame, "Рука обнаружена", (x_min, max(10, y_min - 35)), self.theme_secondary)
         lines = [
             f"Жест: {command.gesture_ru}",
             f"Робот: {command.action_ru}",
-            f"Пальцев: {finger_count}",
         ]
         for i, line in enumerate(lines):
-            frame = self._draw_text_ru(frame, line, (x_min + 8, min(h - 30, y_max + 10 + i * 30)))
+            frame = self._draw_text_ru(frame, line, (x_min + 8, min(h - 30, y_max + 10 + i * 30)), self.theme_accent)
         return frame
 
     def run(self):
@@ -380,7 +387,6 @@ class GestureRobotController:
         mp_draw = mp.solutions.drawing_utils
 
 
-        print("Запуск. Нажмите 'q' для выхода.")
         try:
             hands_ctx = mp_hands.Hands(
                 static_image_mode=False,
@@ -410,20 +416,18 @@ class GestureRobotController:
                 if result.multi_hand_landmarks and result.multi_handedness:
                     hand_landmarks = result.multi_hand_landmarks[0]
                     handedness = result.multi_handedness[0].classification[0].label
-                    command, finger_count = self._command_from_landmarks(hand_landmarks, handedness)
+                    command, _ = self._command_from_landmarks(hand_landmarks, handedness)
                     command = self._stabilize_command(command)
 
                     mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                    frame = self._draw_box_and_labels(frame, hand_landmarks, command, finger_count)
+                    frame = self._draw_box_and_labels(frame, hand_landmarks, command)
                     status_text = f"Обнаружен жест: {command.gesture_ru}. Команда роботу: {command.action_ru}"
 
-                frame = self._draw_text_ru(frame, "Управление роботом жестами", (20, 20), (0, 255, 0))
-                frame = self._draw_text_ru(frame, "Режим: MediaPipe", (20, 55), (0, 220, 220))
-                frame = self._draw_text_ru(frame, status_text, (20, 90))
-                frame = self._draw_text_ru(frame, f"D3 D2 D1 D0: {command.code}", (20, 125), (255, 255, 0))
-
-                cv2.imshow("Gesture Robot UI", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                frame = self._draw_text_ru(frame, status_text, (20, 20), self.theme_primary)
+                frame = self._draw_text_ru(frame, f"D3 D2 D1 D0: {command.code}", (20, 55), self.theme_secondary)
+                cv2.imshow(self.window_name, frame)
+                cv2.waitKey(1)
+                if cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) < 1:
                     break
 
         cap.release()
