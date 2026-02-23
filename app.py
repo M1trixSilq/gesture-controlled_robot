@@ -35,16 +35,14 @@ class RobotCommand:
 
 
 COMMANDS = {
-    "STOP": RobotCommand("0000", "Горизонтально", "Стоп"),
-    "TURN_RIGHT": RobotCommand("0001", "Наклон вправо", "Поворот направо"),
-    "TURN_LEFT": RobotCommand("0010", "Наклон влево", "Поворот налево"),
-    "BACKWARD": RobotCommand("1000", "Наклон назад", "Назад"),
-    "FORWARD": RobotCommand("0100", "Наклон вперёд", "Вперёд"),
+    "STOP": RobotCommand("0000", "Открытая ладонь (пальцы вместе)", "Стоп"),
+    "TURN_RIGHT": RobotCommand("0001", "1 палец вправо", "Поворот направо"),
+    "TURN_LEFT": RobotCommand("0010", "1 палец влево", "Поворот налево"),
+    "BACKWARD": RobotCommand("1000", "2 пальца вверх", "Назад"),
+    "FORWARD": RobotCommand("0100", "1 палец вверх", "Вперёд"),
     "GRIP_CLOSE": RobotCommand("GRIP_CLOSE", "Кулак", "Сжать захват манипулятора"),
-    "GRIP_OPEN": RobotCommand("GRIP_OPEN", "Открытая кисть", "Разжать захват манипулятора"),
+    "GRIP_OPEN": RobotCommand("GRIP_OPEN", "Открытая ладонь (пальцы раздельно)", "Разжать захват манипулятора"),
 }
-
-
 
 def opencv_missing_message_ru() -> str:
     current_python = Path(sys.executable)
@@ -128,50 +126,113 @@ class GestureRobotController:
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
     @staticmethod
+    def _distance(lm, a: int, b: int) -> float:
+        dx = lm[a].x - lm[b].x
+        dy = lm[a].y - lm[b].y
+        return (dx * dx + dy * dy) ** 0.5
+
+    @staticmethod
+    def _thumb_extended(hand_landmarks) -> bool:
+        lm = hand_landmarks.landmark
+        mcp_to_tip = GestureRobotController._distance(lm, 2, 4)
+        mcp_to_ip = GestureRobotController._distance(lm, 2, 3)
+        return mcp_to_tip > mcp_to_ip * 1.25
+
+
+    @staticmethod
     def _fingers_up(hand_landmarks, handedness_label: str) -> list[bool]:
         lm = hand_landmarks.landmark
-
-        thumb_tip = lm[4]
-        thumb_ip = lm[3]
-        thumb_up = thumb_tip.x < thumb_ip.x if handedness_label == "Right" else thumb_tip.x > thumb_ip.x
+        thumb_up = GestureRobotController._thumb_extended(hand_landmarks)
 
         finger_pairs = [(8, 6), (12, 10), (16, 14), (20, 18)]
         others = [lm[tip].y < lm[pip].y for tip, pip in finger_pairs]
         return [thumb_up, *others]
 
+    @staticmethod
+    def _is_fist(hand_landmarks, fingers: list[bool]) -> bool:
+        lm = hand_landmarks.landmark
+        finger_pairs = [(8, 6), (12, 10), (16, 14), (20, 18)]
+        curled_others = [lm[tip].y > lm[pip].y for tip, pip in finger_pairs]
+        return all(curled_others) and not any(fingers) and not GestureRobotController._thumb_extended(hand_landmarks)
 
     @staticmethod
-    def _classify_direction(wrist, middle_mcp) -> RobotCommand:
-        dx = middle_mcp.x - wrist.x
-        dy = middle_mcp.y - wrist.y
+    def _is_open_palm_spread(hand_landmarks, fingers: list[bool]) -> bool:
+        if not all(fingers):
+            return False
 
+        lm = hand_landmarks.landmark
 
+        def dist(a: int, b: int) -> float:
+            dx = lm[a].x - lm[b].x
+            dy = lm[a].y - lm[b].y
+            return (dx * dx + dy * dy) ** 0.5
+
+        palm_size = max(dist(0, 9), 1e-6)
+        adjacent_tip_distances = [dist(4, 8), dist(8, 12), dist(12, 16), dist(16, 20)]
+        avg_norm_distance = sum(adjacent_tip_distances) / (len(adjacent_tip_distances) * palm_size)
+        return avg_norm_distance > 0.72
+
+    @staticmethod
+    def _classify_single_finger_direction(hand_landmarks, fingers: list[bool]) -> RobotCommand:
+        lm = hand_landmarks.landmark
         horizontal_threshold = 0.08
         vertical_threshold = 0.10
+
+        finger_vectors = {
+            0: (2, 4),
+            1: (5, 8),
+            2: (9, 12),
+            3: (13, 16),
+            4: (17, 20),
+        }
+
+        finger_idx = next((idx for idx, up in enumerate(fingers) if up), None)
+        if finger_idx is None:
+            return COMMANDS["STOP"]
+
+        base_id, tip_id = finger_vectors[finger_idx]
+        dx = lm[tip_id].x - lm[base_id].x
+        dy = lm[tip_id].y - lm[base_id].y
 
         if dx > horizontal_threshold:
             return COMMANDS["TURN_RIGHT"]
         if dx < -horizontal_threshold:
-            return COMMANDS["TURN_LEFT"]
-        if dy > vertical_threshold:
-            return COMMANDS["BACKWARD"]
+            return COMMANDS["TURN_LEFT"]   
         if dy < -vertical_threshold:
             return COMMANDS["FORWARD"]
         return COMMANDS["STOP"]
+
+    @staticmethod
+    def _is_two_fingers_up_backward(hand_landmarks, fingers: list[bool]) -> bool:
+        # Назад: подняты только указательный и средний пальцы, оба направлены вверх.
+        if fingers != [False, True, True, False, False]:
+            return False
+
+        lm = hand_landmarks.landmark
+        index_dy = lm[8].y - lm[5].y
+        middle_dy = lm[12].y - lm[9].y
+        vertical_threshold = 0.10
+        return index_dy < -vertical_threshold and middle_dy < -vertical_threshold
 
     def _command_from_landmarks(self, hand_landmarks, handedness_label: str) -> tuple[RobotCommand, int]:
         fingers = self._fingers_up(hand_landmarks, handedness_label)
         finger_count = sum(fingers)
 
-        if finger_count <= 1:
+        if finger_count == 1:
+            return self._classify_single_finger_direction(hand_landmarks, fingers), finger_count
+
+        if self._is_fist(hand_landmarks, fingers):
             return COMMANDS["GRIP_CLOSE"], finger_count
-        if finger_count >= 4:
-            return COMMANDS["GRIP_OPEN"], finger_count
 
+        if self._is_two_fingers_up_backward(hand_landmarks, fingers):
+            return COMMANDS["BACKWARD"], finger_count
 
-        wrist = hand_landmarks.landmark[0]
-        middle_mcp = hand_landmarks.landmark[9]
-        return self._classify_direction(wrist, middle_mcp), finger_count
+        if finger_count == 5:
+            if self._is_open_palm_spread(hand_landmarks, fingers):
+                return COMMANDS["GRIP_OPEN"], finger_count
+            return COMMANDS["STOP"], finger_count
+
+        return COMMANDS["STOP"], finger_count
 
     def _stabilize_command(self, new_command: RobotCommand) -> RobotCommand:
         now = time.time()
