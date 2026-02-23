@@ -8,7 +8,16 @@ if not exist "%FONT_PATH%" (
   exit /b 1
 )
 
-python -m PyInstaller --noconfirm --clean --onefile --name gesture_robot_rostech --add-data "%FONT_PATH%;assets/fonts" main.py
+python -m PyInstaller --noconfirm --clean --onefile --name gesture_robot_rostech ^
+  --collect-all mediapipe ^
+  --collect-all cv2 ^
+  --hidden-import numpy ^
+  --hidden-import PIL ^
+  --hidden-import PIL.Image ^
+  --hidden-import PIL.ImageDraw ^
+  --hidden-import PIL.ImageFont ^
+  --add-data "%FONT_PATH%;assets/fonts" ^
+  main.py
 if errorlevel 1 (
   echo Build failed.
   exit /b 1
