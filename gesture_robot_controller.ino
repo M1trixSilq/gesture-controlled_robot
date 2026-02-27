@@ -1,6 +1,6 @@
 #include <Servo.h>
 
-// --- Пины драйвера моторов (пример для L298N / TB6612-подобной схемы) ---
+//Пины драйвера моторов (L298N)
 const uint8_t LEFT_IN1 = 4;
 const uint8_t LEFT_IN2 = 5;
 const uint8_t LEFT_PWM = 6;   // PWM
@@ -9,12 +9,12 @@ const uint8_t RIGHT_IN1 = 7;
 const uint8_t RIGHT_IN2 = 8;
 const uint8_t RIGHT_PWM = 10; // PWM
 
-// --- Сервопривод захвата ---
+//Сервопривод захвата
 const uint8_t GRIP_SERVO_PIN = 9;
 const int GRIP_OPEN_ANGLE = 20;
 const int GRIP_CLOSE_ANGLE = 95;
 
-// --- Скорости шасси ---
+//Скорости шасси
 const uint8_t DRIVE_SPEED = 190;
 const uint8_t TURN_SPEED = 180;
 
