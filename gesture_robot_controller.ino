@@ -14,6 +14,11 @@ const uint8_t GRIP_SERVO_PIN = 9;
 const int GRIP_OPEN_ANGLE = 20;
 const int GRIP_CLOSE_ANGLE = 95;
 
+//Сервопривод локтя
+const uint8_t ELBOW_SERVO_PIN = 11;
+const int ELBOW_DOWN_ANGLE = 30;
+const int ELBOW_UP_ANGLE = 95;
+
 //Скорости шасси
 const uint8_t DRIVE_SPEED = 190;
 const uint8_t TURN_SPEED = 180;
@@ -22,6 +27,7 @@ const uint8_t TURN_SPEED = 180;
 const unsigned long COMMAND_TIMEOUT_MS = 700;
 
 Servo gripServo;
+Servo elbowServo;
 String serialBuffer;
 unsigned long lastCommandTime = 0;
 
@@ -36,12 +42,14 @@ void setup() {
 
   gripServo.attach(GRIP_SERVO_PIN);
   gripServo.write(GRIP_OPEN_ANGLE);
+  elbowServo.attach(ELBOW_SERVO_PIN);
+  elbowServo.write(ELBOW_DOWN_ANGLE);
 
   stopMotors();
 
   Serial.begin(115200);
   Serial.println("[Robot] Ready. Waiting for commands...");
-  Serial.println("[Robot] Supported: 0000/0001/0010/0100/1000, GRIP_OPEN, GRIP_CLOSE");
+  Serial.println("[Robot] Supported: 0000/0001/0010/0100/1000, GRIP_OPEN (elbow down + grip open), GRIP_CLOSE (elbow up + grip close)");
 
   serialBuffer.reserve(32);
   lastCommandTime = millis();
@@ -112,12 +120,14 @@ void handleCommand(String cmd) {
 
   // Захват манипулятора
   if (cmd == "GRIP_OPEN") {
+    elbowServo.write(ELBOW_DOWN_ANGLE);
     gripServo.write(GRIP_OPEN_ANGLE);
     Serial.println("[Robot] GRIP_OPEN");
     return;
   }
 
   if (cmd == "GRIP_CLOSE") {
+    elbowServo.write(ELBOW_UP_ANGLE);
     gripServo.write(GRIP_CLOSE_ANGLE);
     Serial.println("[Robot] GRIP_CLOSE");
     return;
